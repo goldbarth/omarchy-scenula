@@ -16,9 +16,12 @@ Checked against the installed Omarchy plugin commands and `shell/services/Plugin
 - Update/removal commands locate checkouts by directory name.
   The checkout must move together with the shell references to support subsequent updates/removal using the new ID.
 
-The release therefore needs the explicit one-time migration sequence in [README.md](README.md#upgrading-from-tessella).
-It does **not** provide a zero-intervention upgrade for users who only run an ordinary Omarchy update.
-Existing users must run the documented migration command once.
+Changing the ID inside the Tessella repository would therefore break the widget for every user on an ordinary update.
+A single repository also cannot serve both IDs: `omarchy-plugin-update` always follows `origin HEAD`.
+Scenula therefore ships from its own repository, and Tessella gets a final 0.2.1 bridge release with the old ID.
+The bridge shows a rename banner, a daily notification and a **Migrate to Scenula** button.
+The button installs Scenula next to Tessella (not enabled) and runs `scenula.py migrate`, see [README.md](README.md#upgrading-from-tessella).
+Users who never update Tessella keep a working 0.2.x install.
 
 ## Storage strategy
 
@@ -32,30 +35,21 @@ Normal daily sync and rotation retain their existing behavior after startup.
 
 The shell config receives a byte-for-byte backup before changing identity fields, and updates atomically with its original permissions.
 A symlinked shell config remains a symlink.
-Conflicting independent data directories or installed checkouts are refused rather than merged, deleted or hidden.
-An interrupted migration can be rerun from whichever checkout directory currently exists.
-Old IPC targets route to the same handler code; no second plugin or service is installed.
+Conflicting independent data directories, both plugins enabled, and a Tessella checkout with local changes are refused rather than merged, deleted or hidden.
+The Tessella checkout is removed only as the last step, so an interrupted migration can be rerun with the same command.
+The old IPC target routes to the same handler code once the Tessella widget is gone.
 Absolute paths in external scripts to the old plugin checkout require manual adjustment.
 
 ## Publication steps
 
-1. Review and commit this change locally.
-   Rename the existing GitHub repository to `goldbarth/omarchy-scenula` through Repository Settings.
-   Keep its history; do not create a replacement repository.
-2. Update the maintainer's local remote with `git remote set-url origin https://github.com/goldbarth/omarchy-scenula.git` and publish the reviewed commit.
-   Confirm both the old and new URLs can fetch the same release before announcing it.
-   Never reuse `goldbarth/omarchy-tessella`, because doing so removes GitHub's old-name redirects.
-3. Coordinate the existing [marketplace listing](https://github.com/omacom/omarchy-plugin-marketplace/issues/12751) with its maintainers.
-   Request a rename of the existing listing/source identity, repository URL, installation command, preview and reviewed snapshot, preserving the existing listing rather than publishing a duplicate.
-   The marketplace's [normal update workflow](https://github.com/omacom/omarchy-plugin-marketplace/blob/main/VERIFICATION.md#promoting-a-plugin-update) requires the exact configured plugin ID set to remain unchanged, so it cannot promote this ID change as an ordinary update.
-   Maintainer handling and fresh review of the exact published commit are required.
-4. Announce the one-time upgrade commands from the README wherever existing users receive release notices.
-   Explain the temporary missing-widget interval between update and migration, and the recovery command for users who already updated.
-5. After publication, test installation from the renamed GitHub URL and an update through an old GitHub remote.
-   GitHub-side redirect behavior cannot be exercised against this unpublished local change.
-
-GitHub documents continued clone/fetch/push support for renamed repositories in its [rename guide](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
-No GitHub repository, marketplace listing, installed plugin or real user data is changed by preparing this local release.
+1. Create `goldbarth/omarchy-scenula` as a new public repository and push this history.
+   Do not rename `goldbarth/omarchy-tessella`: existing checkouts must keep fetching the bridge release from it.
+2. Merge the Tessella revert (#15) and the 0.2.1 bridge release in `goldbarth/omarchy-tessella`, only after step 1.
+   The bridge installs from the Scenula repository, so it must exist first.
+3. Marketplace: request the Tessella 0.2.1 update through the normal verification workflow; its plugin ID set is unchanged.
+   Submit Scenula as a new listing.
+   After the transition period, ask the maintainers to delist Tessella and archive its repository.
+4. After publication, run the bridge once from a real Tessella install: update, open the panel, choose **Migrate to Scenula**.
 
 ## Validation
 
@@ -73,14 +67,15 @@ The default offscreen backend verifies service/widget loading and IPC; a Wayland
 Git installation/update, manifest discovery, widget/service loading, IPC and ImageMagick rendering run for real.
 Only monitor detection and the final wallpaper setter are replaced, so they cannot change the real desktop wallpaper.
 The upgrade fixture starts with legacy identity/configuration and populated images, metadata, collages and state.
-The tests reproduce the changed-ID discovery gap, then verify migration, legacy/new IPC, automatic rotation, restart persistence and subsequent updates.
-Offline regressions cover idempotency, concurrent initialization, conflict refusal, malformed configuration, shell config symlinks, lock sharing, cancellation, remote preservation and data integrity.
-Visible compositor placement and live GitHub redirects still need the post-publication checks above.
+The tests install Scenula next to a running Tessella widget, then verify migration, legacy/new IPC, automatic rotation, restart persistence and subsequent updates.
+Offline regressions cover idempotency, concurrent initialization, conflict refusal, local changes, malformed configuration, shell config symlinks, lock sharing, cancellation and data integrity.
+Visible compositor placement and the live GitHub install still need the post-publication check above.
 
-## Results on 2026-10-30
+## Results on 2026-10-31
 
 Validated on Omarchy 4.0.6-1 and Quickshell 0.3.2.r7.g2b4501a-1.
-All 18 tests passed with the Wayland backend, including real panel instantiation with closed windows.
-Manifest validation, Python compilation, SVG rendering and `git diff --check` passed.
-A separate metadata snapshot of the existing user library reported 2,267 usable tagged images, 49 themes and zero pending color analyses; all copied JSON bytes remained unchanged after Scenula status inspection.
+All 21 tests passed with the offscreen and Wayland backends, including real panel instantiation with closed windows.
+An end-to-end run in a temporary HOME installed the real Tessella 0.2.1 bridge with `omarchy plugin add --enable`, then ran its real `migrate-to-scenula.sh` against a local copy of this repository.
+Result: Scenula took over the bar entry, settings were kept, the Tessella checkout was removed, and both IPC targets answered.
+Manifest validation and `git diff --check` passed.
 The real installation and its backing data were not migrated during validation.

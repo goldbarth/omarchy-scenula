@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("manifest.json", "Service.qml", "BarWidget.qml", "Panel.qml",
-         "scenula.py", "tessella.py", "palettes.json")
+         "scenula.py", "palettes.json")
 
 
 def write_json(path, data):
@@ -29,9 +29,16 @@ class MigrationFixture(unittest.TestCase):
         self.plugins = self.home / ".config/omarchy/plugins"
         self.old = self.plugins / "goldbarth.tessella"
         self.new = self.plugins / "goldbarth.scenula"
-        self.old.mkdir(parents=True)
+        # Scenula is added next to Tessella before migrating; Tessella is a git checkout.
+        self.new.mkdir(parents=True)
         for name in FILES:
-            shutil.copy2(ROOT / name, self.old / name)
+            shutil.copy2(ROOT / name, self.new / name)
+        self.old.mkdir()
+        write_json(self.old / "manifest.json", {"id": "goldbarth.tessella", "name": "Tessella"})
+        git = ["git", "-C", str(self.old), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run(["git", "init", "-q", str(self.old)], check=True)
+        subprocess.run(git + ["add", "."], check=True)
+        subprocess.run(git + ["commit", "-q", "-m", "legacy"], check=True)
         self.shell = self.home / ".config/omarchy/shell.json"
         self.config = {"version": 1, "bar": {"centerAnchor": "goldbarth.tessella", "layout": {
             "left": [{"id": "unrelated", "custom": "goldbarth.tessella"}], "center": [],
@@ -55,7 +62,7 @@ class MigrationFixture(unittest.TestCase):
         path.chmod(0o755)
 
     def cli(self, *args, script=None, ok=True):
-        script = script or (self.new if self.new.exists() else self.old) / "scenula.py"
+        script = script or self.new / "scenula.py"
         result = subprocess.run([sys.executable, "-I", str(script), *args],
                                 env=self.env, text=True, capture_output=True, timeout=20)
         if ok:
@@ -129,21 +136,44 @@ class MigrationTests(MigrationFixture):
         self.assertEqual(status["state"]["futureState"], 9)
         self.assertTrue((self.home / ".local/state/omarchy/current/background").is_file())
 
+    def assertUnchanged(self):
+        self.assertEqual(self.shell.read_bytes(), self.original)
+        self.assertTrue((self.old / "manifest.json").is_file())
+        self.assertFalse((self.home / ".config/omarchy/scenula").exists())
+
     def test_conflicting_data_fails_before_any_changes(self):
         config, data, state = self.populate()
         (self.home / ".local/share/scenula").mkdir()
         before = self.snapshot([config.parent, data, state])
         self.assertIn("Nothing was merged", self.cli("migrate", ok=False).stderr)
-        self.assertEqual(self.shell.read_bytes(), self.original)
-        self.assertTrue(self.old.is_dir())
-        self.assertFalse((self.home / ".config/omarchy/scenula").exists())
+        self.assertUnchanged()
         self.assertEqual(before, self.snapshot([config.parent, data, state]))
 
-    def test_two_checkouts_are_not_merged_or_removed(self):
-        shutil.copytree(self.old, self.new)
-        self.cli("migrate", ok=False, script=self.old / "scenula.py")
-        self.assertTrue(self.old.is_dir() and self.new.is_dir())
+    def test_local_changes_in_tessella_checkout_are_kept(self):
+        (self.old / "notes.txt").write_text("mine")
+        self.assertIn("local changes", self.cli("migrate", ok=False).stderr)
+        self.assertUnchanged()
+        self.assertEqual((self.old / "notes.txt").read_text(), "mine")
+
+    def test_unexpected_plugin_in_tessella_directory_is_left_alone(self):
+        write_json(self.old / "manifest.json", {"id": "someone.else"})
+        self.cli("migrate", ok=False)
+        self.assertUnchanged()
+
+    def test_tessella_symlink_is_left_alone(self):
+        dev = self.home / "dev/tessella"
+        dev.parent.mkdir()
+        self.old.rename(dev)
+        self.old.symlink_to(dev)
+        self.cli("migrate", ok=False)
+        self.assertTrue(self.old.is_symlink() and dev.is_dir())
         self.assertEqual(self.shell.read_bytes(), self.original)
+
+    def test_script_outside_the_installed_checkout_is_refused(self):
+        copy = self.home / "copy"
+        shutil.copytree(self.new, copy)
+        self.assertIn("Run the installed script", self.cli("migrate", script=copy / "scenula.py", ok=False).stderr)
+        self.assertUnchanged()
 
     def test_invalid_shell_json_is_untouched(self):
         self.shell.write_text("{broken")
@@ -169,7 +199,7 @@ class MigrationTests(MigrationFixture):
         self.assertTrue(self.shell.is_symlink())
         self.assertEqual(json.loads(target.read_text())["plugins"][0]["id"], "goldbarth.scenula")
 
-    def test_duplicate_bar_placements_are_rejected(self):
+    def test_both_plugins_enabled_is_rejected(self):
         self.config["bar"]["layout"]["left"].append({"id": "goldbarth.scenula", "other": True})
         write_json(self.shell, self.config)
         self.cli("migrate", ok=False)
@@ -187,9 +217,15 @@ class MigrationTests(MigrationFixture):
         self.assertEqual(updated["bar"]["layout"]["right"], [])
         self.assertEqual(updated["plugins"], [])
 
-    def test_interrupted_checkout_rename_is_resumable(self):
+    def test_never_enabled_tessella_gets_an_enable_hint(self):
+        write_json(self.shell, {"version": 1, "bar": {"layout": {"right": []}}})
+        result = self.cli("migrate")
+        self.assertIn("omarchy plugin enable goldbarth.scenula", result.stdout)
+        self.assertFalse(self.old.exists())
+
+    def test_rerun_after_checkout_removal_completes(self):
         self.populate()
-        self.old.rename(self.new)
+        shutil.rmtree(self.old)
         self.cli("migrate")
         self.assertEqual(json.loads(self.shell.read_text())["plugins"][0]["id"], "goldbarth.scenula")
 
@@ -200,7 +236,7 @@ class MigrationTests(MigrationFixture):
         self.assertFalse((self.home / ".config/omarchy/scenula").exists())
 
     def test_fresh_start_creates_only_scenula_data(self):
-        self.old.rename(self.new)
+        shutil.rmtree(self.old)
         self.cli("init")
         self.assertFalse((self.home / ".local/share/tessella").exists())
         config = self.home / ".config/omarchy/scenula/config.json"
@@ -209,10 +245,9 @@ class MigrationTests(MigrationFixture):
         self.assertEqual(status["images"], 0)
         self.assertEqual(config.read_text(), "")
 
-    def test_old_cli_entry_point_and_render_lock_are_shared(self):
+    def test_render_lock_is_shared_with_tessella(self):
         _, _, state = self.populate()
         self.cli("migrate")
-        self.assertEqual(json.loads(self.cli("status", script=self.new / "tessella.py").stdout)["images"], 4)
         with open(state / "render.lock", "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             result = self.cli("next", ok=False)
@@ -220,7 +255,7 @@ class MigrationTests(MigrationFixture):
 
     def test_parallel_initializations_share_one_store(self):
         self.populate()
-        processes = [subprocess.Popen([sys.executable, "-I", str(self.old / "scenula.py"), "init"],
+        processes = [subprocess.Popen([sys.executable, "-I", str(self.new / "scenula.py"), "init"],
                                       env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                      for _ in range(5)]
         for process in processes:
@@ -245,19 +280,6 @@ class MigrationTests(MigrationFixture):
                 if process.poll() is None:
                     process.kill()
                     process.wait()
-
-    def test_known_upstream_remote_updates_and_fork_stays(self):
-        subprocess.run(["git", "init", "-q", str(self.old)], check=True)
-        subprocess.run(["git", "-C", str(self.old), "remote", "add", "origin",
-                        "git@github.com:goldbarth/omarchy-tessella.git"], check=True)
-        self.cli("migrate")
-        remote = subprocess.check_output(["git", "-C", str(self.new), "remote", "get-url", "origin"], text=True)
-        self.assertEqual(remote.strip(), "git@github.com:goldbarth/omarchy-scenula.git")
-        subprocess.run(["git", "-C", str(self.new), "remote", "set-url", "origin",
-                        "https://example.invalid/my-fork"], check=True)
-        self.cli("migrate")
-        remote = subprocess.check_output(["git", "-C", str(self.new), "remote", "get-url", "origin"], text=True)
-        self.assertEqual(remote.strip(), "https://example.invalid/my-fork")
 
 
 if __name__ == "__main__":

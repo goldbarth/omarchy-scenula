@@ -140,41 +140,43 @@ omarchy bar move goldbarth.scenula --section right
 
 ## Upgrading from Tessella
 
-Scenula replaces Tessella, including the plugin ID (`goldbarth.tessella` to `goldbarth.scenula`).
-Omarchy currently updates Git checkouts and rescans manifests; it has no third-party ID migration hook.
-**An ordinary update alone cannot migrate the old bar entry.**
-Use this one-time sequence after the Scenula release is published:
+Scenula is the new name of Tessella, with its own repository and plugin ID (`goldbarth.scenula`).
+Your artists, images, tags, history and settings carry over.
+
+The easiest way: update Tessella, open it in the bar and choose **Migrate to Scenula**.
 
 ```bash
 omarchy plugin update goldbarth.tessella
-python3 ~/.config/omarchy/plugins/goldbarth.tessella/scenula.py migrate
 ```
 
-The widget may be temporarily unavailable between these commands.
-Do not uninstall Tessella or install Scenula alongside it.
-If you already updated Tessella and its widget disappeared, run the second command.
-If the checkout has already moved, the same command is safe to repeat at `~/.config/omarchy/plugins/goldbarth.scenula/scenula.py`.
+The button opens a terminal that runs these two commands, which you can also run yourself:
+
+```bash
+omarchy plugin add https://github.com/goldbarth/omarchy-scenula --yes
+python3 ~/.config/omarchy/plugins/goldbarth.scenula/scenula.py migrate
+```
+
+Add Scenula without `--enable`: the migration moves the existing Tessella bar entry instead of creating a second one.
 
 The migration:
 
-- Renames the existing installed checkout, including its Git history, to `goldbarth.scenula`.
 - Replaces the old ID in `shell.json` bar entries, the center anchor, plugin entries and disabled entries, preserving placement, options, and enabled/disabled status.
   Saves the original bytes as `~/.config/omarchy/shell.json.before-scenula` without replacing an earlier backup.
 - Creates Scenula directory aliases pointing to existing Tessella config, data and state directories.
   The legacy directories stay in place, so image paths, tags, colors, hidden images, collages, history, pause state and background links remain valid.
   Nothing is downloaded, tagged, reprocessed or deleted by migration.
-- Updates a recognized upstream Git `origin` URL to `goldbarth/omarchy-scenula`, preserving HTTPS or SSH transport.
-  Fork/custom remotes stay unchanged.
+- Removes the Tessella plugin checkout as its last step.
+  It refuses if that checkout has local changes.
 - Rescans the shell; if it is unavailable, prints the command to run after starting it.
 
-Migration refuses independent old/new data directories, two installed checkouts, conflicting bar entries, invalid shell JSON and development symlinks.
+Migration refuses independent old/new data directories, conflicting bar entries (both plugins enabled), invalid shell JSON and development symlinks.
 It does not merge them or pick which data to discard.
 Resolve the reported conflict first, keeping a backup of both copies, then retry.
-Completed steps are safe to repeat after an interruption.
+The command is safe to repeat after an interruption.
 
 Existing `omarchy-shell goldbarth.tessella ...` bindings continue working once the Scenula widget loads.
 Use `goldbarth.scenula` for new commands, updates and removal.
-The `tessella.py` filename remains a small legacy entry point inside the renamed checkout; scripts with an absolute path to the old plugin directory must use the new directory.
+Scripts with an absolute path to the old plugin directory must use the new directory.
 
 ```bash
 omarchy plugin update goldbarth.scenula

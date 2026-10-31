@@ -95,7 +95,7 @@ class LifecycleTests(MigrationFixture):
         return self.command("git", "-C", str(directory), *args)
 
     def make_upstream(self, legacy=False):
-        upstream = self.home / "upstream"
+        upstream = self.home / ("upstream-tessella" if legacy else "upstream")
         upstream.mkdir()
         for name in FILES:
             shutil.copy2(ROOT / name, upstream / name)
@@ -104,7 +104,7 @@ class LifecycleTests(MigrationFixture):
             # Keep the real service API so hot-reloaded widgets can use it
             # while the manifest rescan is pending, as in the published plugin.
             manifest = json.loads((upstream / "manifest.json").read_text())
-            manifest.update(id="goldbarth.tessella", name="Tessella", version="0.2.0")
+            manifest.update(id="goldbarth.tessella", name="Tessella", version="0.2.1")
             write_json(upstream / "manifest.json", manifest)
             for name in ("Service.qml", "BarWidget.qml", "Panel.qml"):
                 text = (upstream / name).read_text().replace("scenula", "tessella")
@@ -120,6 +120,7 @@ class LifecycleTests(MigrationFixture):
 
     def test_fresh_install_discovery_widget_ipc_and_retained_uninstall_data(self):
         shutil.rmtree(self.old)
+        shutil.rmtree(self.new)
         self.config["bar"]["layout"]["right"] = []
         self.config["plugins"] = []
         write_json(self.shell, self.config)
@@ -141,7 +142,7 @@ class LifecycleTests(MigrationFixture):
         self.assertTrue((self.home / ".config/omarchy/scenula/config.json").is_file())
         self.assert_no_qml_errors()
 
-    def test_actual_update_reproduces_id_gap_then_migration_restores_widget_and_rotation(self):
+    def test_side_by_side_install_then_migration_restores_widget_and_rotation(self):
         config_path, data, state = self.populate()
         config = json.loads(config_path.read_text())
         config.update(palette="", intervalMinutes=30)
@@ -149,19 +150,19 @@ class LifecycleTests(MigrationFixture):
         sync_path = state / "sync.json"
         write_json(sync_path, {"lastSync": int(time.time()), "phase": "done", "running": False})
         original_library = (data / "library.json").read_bytes()
-        upstream = self.make_upstream(legacy=True)
+        legacy = self.make_upstream(legacy=True)
+        upstream = self.make_upstream()
         shutil.rmtree(self.old)
-        self.command("git", "clone", "-q", str(upstream), str(self.old))
+        shutil.rmtree(self.new)
+        self.command("git", "clone", "-q", str(legacy), str(self.old))
         self.start_shell()
         self.wait_report(lambda r: r["active"] == "goldbarth.tessella" and r["widgetLoaded"])
-        for name in FILES:
-            shutil.copy2(ROOT / name, upstream / name)
-        self.git(upstream, "add", ".")
-        self.git(upstream, "commit", "-qm", "Rename fixture to Scenula")
-        self.command("omarchy-plugin-update", "goldbarth.tessella", "--yes")
-        # Real registry: the new manifest does not match the old shell entry.
-        self.wait_report(lambda r: r["ids"] == ["goldbarth.scenula"] and r["active"] == "")
+        # What the Tessella 0.2.1 bridge runs: add Scenula without enabling it, then migrate.
+        self.command("omarchy-plugin-add", str(upstream), "--yes")
+        self.wait_report(lambda r: sorted(r["ids"]) == ["goldbarth.scenula", "goldbarth.tessella"]
+                         and r["active"] == "goldbarth.tessella")
         self.cli("migrate")
+        self.assertFalse(self.old.exists())
         report = self.wait_report(lambda r: r["loaded"] and r["widgetReady"])
         self.assertEqual(report["error"], "")
         self.assert_panel_loaded(report)
@@ -204,7 +205,7 @@ class LifecycleTests(MigrationFixture):
 
     def test_data_conflict_blocks_startup_without_overwriting_legacy_config(self):
         config_path, data, state = self.populate()
-        self.old.rename(self.new)
+        shutil.rmtree(self.old)
         self.config["bar"]["layout"]["right"][0]["id"] = "goldbarth.scenula"
         self.config["plugins"] = []
         write_json(self.shell, self.config)

@@ -3,7 +3,7 @@
 
 Commands:
   init      prepare data aliases and files before shell watchers start
-  migrate   migrate an updated Tessella checkout and its shell configuration
+  migrate   take over an installed Tessella plugin: shell entries, data, checkout
   sync      fetch every configured artist's RSS feed, download new images,
             drop removed artists, analyze image colors, tag untagged images via Ollama
   cancel    stop a running sync; what is done so far is kept
@@ -161,23 +161,38 @@ def migrated_shell_config(config):
     return config
 
 
+def plugin_referenced(config, plugin_id):
+    bar = config.get("bar", {})
+    entries = [e for items in bar.get("layout", {}).values() for e in items]
+    entries += config.get("plugins", []) + config.get("disabledPlugins", [])
+    return any((e.get("id") if isinstance(e, dict) else e) == plugin_id for e in entries)
+
+
 def cmd_migrate():
+    """Take over a Tessella installation: its shell entries, its data, then its checkout.
+
+    Scenula is installed next to Tessella first (omarchy plugin add, not enabled).
+    """
     plugins = HOME / ".config/omarchy/plugins"
     old, new = plugins / OLD_ID, plugins / PLUGIN_ID
     shell_path = HOME / ".config/omarchy/shell.json"
     with migration_lock():
         # Preflight every conflict before modifying user configuration or paths.
         check_data_paths()
-        if os.path.lexists(old) and os.path.lexists(new):
-            raise RuntimeError(f"Both {old} and {new} exist; keep one installation before migrating. "
-                               "Neither installation was changed.")
-        installed = old if os.path.lexists(old) else new
-        if installed.is_symlink() or not installed.is_dir():
-            raise RuntimeError("Run migrate from a regular installed checkout, not a development symlink")
-        if installed.resolve() != Path(__file__).resolve().parent:
-            raise RuntimeError(f"Run the installed script: python3 {installed}/scenula.py migrate")
-        if read_json(installed / "manifest.json", {}).get("id") != PLUGIN_ID:
-            raise RuntimeError("Update the installed checkout to Scenula before migrating")
+        if not new.is_dir() or new.resolve() != Path(__file__).resolve().parent:
+            raise RuntimeError(f"Run the installed script: python3 {new}/scenula.py migrate")
+        remove_old = os.path.lexists(old)
+        if remove_old:
+            if old.is_symlink() or not old.is_dir():
+                raise RuntimeError(f"{old} is not a regular plugin checkout; remove it yourself, then rerun")
+            if read_json(old / "manifest.json", {}).get("id") != OLD_ID:
+                raise RuntimeError(f"{old} does not contain Tessella; nothing was changed")
+            if (old / ".git").exists():
+                status = subprocess.run(["git", "-C", str(old), "status", "--porcelain"],
+                                        capture_output=True, text=True)
+                if status.returncode or status.stdout.strip():
+                    raise RuntimeError(f"{old} has local changes; save or discard them, then rerun. "
+                                       "Nothing was changed.")
         raw = shell_path.read_bytes() if shell_path.exists() else None
         config = json.loads(raw) if raw is not None else None
         updated = migrated_shell_config(config) if raw is not None else None
@@ -192,35 +207,22 @@ def cmd_migrate():
             except FileExistsError:
                 pass
         prepare_data_paths()
-        if installed == old:
-            old.rename(new)
-        try:
-            if changed:
-                # Refuse an edit made while preflight was running.
-                if shell_path.read_bytes() != raw:
-                    raise RuntimeError("shell.json changed during migration; retry")
-                write_json(shell_path.resolve(), updated, shell_path.stat().st_mode & 0o777)
-        except BaseException:
-            if installed == old:
-                new.rename(old)
-            raise
-        # GitHub redirects keep old remotes working. Update only known upstream
-        # URLs; forks and custom transports remain under the user's control.
-        if (new / ".git").is_dir():
-            remote = subprocess.run(["git", "-C", str(new), "remote", "get-url", "origin"],
-                                    capture_output=True, text=True)
-            url = remote.stdout.strip()
-            if remote.returncode == 0 and re.fullmatch(
-                    r"(?:https://github\.com/|git@github\.com:)goldbarth/omarchy-tessella(?:\.git)?", url):
-                result = subprocess.run(["git", "-C", str(new), "remote", "set-url", "origin",
-                                         url.replace("omarchy-tessella", "omarchy-scenula")],
-                                        capture_output=True, text=True)
-                if result.returncode:
-                    print("Could not update origin; GitHub's rename redirect is still usable.", file=sys.stderr)
-    print(f"Scenula installation: {new}")
+        if changed:
+            # Refuse an edit made while preflight was running.
+            if shell_path.read_bytes() != raw:
+                raise RuntimeError("shell.json changed during migration; retry")
+            write_json(shell_path.resolve(), updated, shell_path.stat().st_mode & 0o777)
+        # Last step: a rerun finds no checkout and only re-checks the rest.
+        # The checkout is a clean clone of a public repository, so nothing is lost.
+        if remove_old:
+            shutil.rmtree(old)
     if changed:
         print(f"Shell configuration backup: {backup}")
+    if remove_old:
+        print(f"Removed the Tessella checkout {old}")
     print("Existing Tessella data directories were kept in place; Scenula paths alias them.")
+    if updated is None or not plugin_referenced(updated, PLUGIN_ID):
+        print(f"Scenula is installed but not enabled. Enable it with: omarchy plugin enable {PLUGIN_ID}")
     try:
         result = subprocess.run(["omarchy-shell", "shell", "rescanPlugins"],
                                 capture_output=True, text=True, timeout=10)
