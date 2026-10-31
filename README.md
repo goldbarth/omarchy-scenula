@@ -147,7 +147,10 @@ The easiest way: update Tessella, open it in the bar and choose **Migrate to Sce
 
 ```bash
 omarchy plugin update goldbarth.tessella
+omarchy restart shell
 ```
+
+The restart is needed because the running shell keeps the old plugin code until then.
 
 The button opens a terminal that runs these two commands, which you can also run yourself:
 
