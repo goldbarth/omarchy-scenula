@@ -38,6 +38,7 @@ import random
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -171,41 +172,40 @@ def plugin_referenced(config, plugin_id):
 def cmd_migrate():
     """Take over a Tessella installation: its shell entries, its data, then its checkout.
 
-    Scenula is installed next to Tessella first (omarchy plugin add, not enabled).
+    Scenula is installed next to Tessella first, not enabled.
     """
     plugins = HOME / ".config/omarchy/plugins"
     old, new = plugins / OLD_ID, plugins / PLUGIN_ID
+    # Hidden folders are ignored by Omarchy's plugin discovery, updates and removal.
+    aside = plugins / f".{OLD_ID}.before-scenula"
     shell_path = HOME / ".config/omarchy/shell.json"
     with migration_lock():
         # Preflight every conflict before modifying user configuration or paths.
         check_data_paths()
         if not new.is_dir() or new.resolve() != Path(__file__).resolve().parent:
             raise RuntimeError(f"Run the installed script: python3 {new}/scenula.py migrate")
-        remove_old = os.path.lexists(old)
-        if remove_old:
+        move_old = os.path.lexists(old)
+        if move_old:
             if old.is_symlink() or not old.is_dir():
                 raise RuntimeError(f"{old} is not a regular plugin checkout; remove it yourself, then rerun")
             if read_json(old / "manifest.json", {}).get("id") != OLD_ID:
                 raise RuntimeError(f"{old} does not contain Tessella; nothing was changed")
-            if (old / ".git").exists():
-                status = subprocess.run(["git", "-C", str(old), "status", "--porcelain"],
-                                        capture_output=True, text=True)
-                if status.returncode or status.stdout.strip():
-                    raise RuntimeError(f"{old} has local changes; save or discard them, then rerun. "
-                                       "Nothing was changed.")
+            if os.path.lexists(aside):
+                raise RuntimeError(f"{aside} already exists; move it away, then rerun. Nothing was changed.")
         raw = shell_path.read_bytes() if shell_path.exists() else None
         config = json.loads(raw) if raw is not None else None
         updated = migrated_shell_config(config) if raw is not None else None
         changed = updated != config
         backup = shell_path.with_name("shell.json.before-scenula")
-        if changed:
+        if os.path.lexists(backup):
             # Never overwrite an earlier backup, including after an interrupted run.
-            try:
-                with open_private(backup, "wb") as f:
-                    f.write(raw)
-                shutil.copymode(shell_path, backup)
-            except FileExistsError:
-                pass
+            # An older version could leave it readable by others; tighten it to
+            # the permissions of shell.json.
+            restrict_existing_file(backup, stat.S_IMODE(shell_path.stat().st_mode) if raw is not None else 0o600)
+        elif changed:
+            with open_private(backup, "wb") as f:
+                f.write(raw)
+            shutil.copymode(shell_path, backup)
         prepare_data_paths()
         if changed:
             # Refuse an edit made while preflight was running.
@@ -213,13 +213,13 @@ def cmd_migrate():
                 raise RuntimeError("shell.json changed during migration; retry")
             write_json(shell_path.resolve(), updated, shell_path.stat().st_mode & 0o777)
         # Last step: a rerun finds no checkout and only re-checks the rest.
-        # The checkout is a clean clone of a public repository, so nothing is lost.
-        if remove_old:
-            shutil.rmtree(old)
+        # Moved, not deleted, so local changes are kept; no git runs in it.
+        if move_old:
+            old.rename(aside)
     if changed:
         print(f"Shell configuration backup: {backup}")
-    if remove_old:
-        print(f"Removed the Tessella checkout {old}")
+    if move_old:
+        print(f"Moved the Tessella checkout to {aside}; delete it when you no longer need it.")
     print("Existing Tessella data directories were kept in place; Scenula paths alias them.")
     if updated is None or not plugin_referenced(updated, PLUGIN_ID):
         print(f"Scenula is installed but not enabled. Enable it with: omarchy plugin enable {PLUGIN_ID}")
@@ -315,6 +315,24 @@ def read_json(path, default):
 def open_private(path, mode):
     """Create a new file that is readable only by its owner from the first byte on."""
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), mode)
+
+
+def restrict_existing_file(path, allowed):
+    """Remove permission bits outside allowed, without following links or touching content."""
+    try:
+        # O_NONBLOCK: opening a FIFO must not wait for a writer.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        raise RuntimeError(f"Cannot safely check {path}; move it away, then rerun") from e
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError(f"{path} is not a regular file owned by you; move it away, then rerun")
+        mode = stat.S_IMODE(info.st_mode)
+        if mode & ~allowed:
+            os.fchmod(fd, mode & allowed)
+    finally:
+        os.close(fd)
 
 
 def write_json(path, data, mode=None):

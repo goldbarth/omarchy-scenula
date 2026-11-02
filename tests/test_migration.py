@@ -32,6 +32,7 @@ class MigrationFixture(unittest.TestCase):
         self.plugins = self.home / ".config/omarchy/plugins"
         self.old = self.plugins / "goldbarth.tessella"
         self.new = self.plugins / "goldbarth.scenula"
+        self.aside = self.plugins / ".goldbarth.tessella.before-scenula"
         # Scenula is added next to Tessella before migrating; Tessella is a git checkout.
         self.new.mkdir(parents=True)
         for name in FILES:
@@ -152,11 +153,19 @@ class MigrationTests(MigrationFixture):
         self.assertUnchanged()
         self.assertEqual(before, self.snapshot([config.parent, data, state]))
 
-    def test_local_changes_in_tessella_checkout_are_kept(self):
+    def test_tessella_checkout_is_moved_aside_with_local_changes(self):
         (self.old / "notes.txt").write_text("mine")
-        self.assertIn("local changes", self.cli("migrate", ok=False).stderr)
+        self.cli("migrate")
+        self.assertFalse(self.old.exists())
+        self.assertEqual((self.aside / "notes.txt").read_text(), "mine")
+        self.assertEqual(json.loads((self.aside / "manifest.json").read_text())["id"], "goldbarth.tessella")
+
+    def test_existing_aside_folder_is_refused_untouched(self):
+        self.aside.mkdir()
+        (self.aside / "keep").write_text("x")
+        self.assertIn("already exists", self.cli("migrate", ok=False).stderr)
         self.assertUnchanged()
-        self.assertEqual((self.old / "notes.txt").read_text(), "mine")
+        self.assertEqual((self.aside / "keep").read_text(), "x")
 
     def test_unexpected_plugin_in_tessella_directory_is_left_alone(self):
         write_json(self.old / "manifest.json", {"id": "someone.else"})
@@ -271,6 +280,40 @@ class MigrationTests(MigrationFixture):
         self.assertEqual(modes, [0o600])
         self.assertEqual(self.shell.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(self.shell.read_text())["plugins"][0]["id"], "goldbarth.scenula")
+
+    def test_backup_left_readable_by_an_interrupted_older_version_is_restricted(self):
+        # An older version wrote the backup with the umask (0644) and was
+        # interrupted before applying the original mode.
+        backup = self.shell.with_name("shell.json.before-scenula")
+        backup.write_bytes(self.original)
+        backup.chmod(0o644)
+        self.cli("migrate")
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(backup.read_bytes(), self.original)
+        self.assertFalse(self.old.exists())
+
+    def test_backup_that_is_not_a_plain_file_is_refused_untouched(self):
+        target = self.home / "elsewhere.json"
+        target.write_text("not mine to change")
+        target.chmod(0o644)
+        backup = self.shell.with_name("shell.json.before-scenula")
+        for make in (lambda: backup.symlink_to(target), backup.mkdir, lambda: os.mkfifo(backup)):
+            make()
+            try:
+                self.assertIn("move it away", self.cli("migrate", ok=False).stderr)
+                self.assertUnchanged()
+                self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            finally:
+                backup.rmdir() if backup.is_dir() and not backup.is_symlink() else backup.unlink()
+
+    def test_git_config_of_the_tessella_checkout_runs_nothing(self):
+        marker = self.home / "fsmonitor-ran"
+        hook = self.home / "hook.sh"
+        hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        hook.chmod(0o755)
+        subprocess.run(["git", "-C", str(self.old), "config", "core.fsmonitor", str(hook)], check=True)
+        self.cli("migrate")
+        self.assertFalse(marker.exists())
 
     def test_broken_directory_symlink_is_rejected(self):
         (self.home / ".local/share").mkdir(parents=True)

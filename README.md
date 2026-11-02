@@ -152,7 +152,8 @@ omarchy restart shell
 
 The restart is needed because the running shell keeps the old plugin code until then.
 
-The button opens a terminal that runs these two commands, which you can also run yourself:
+The button opens a terminal, installs a fixed, reviewed Scenula commit and runs the migration.
+To migrate by hand instead:
 
 ```bash
 omarchy plugin add https://github.com/goldbarth/omarchy-scenula --yes
@@ -168,8 +169,8 @@ The migration:
 - Creates Scenula directory aliases pointing to existing Tessella config, data and state directories.
   The legacy directories stay in place, so image paths, tags, colors, hidden images, collages, history, pause state and background links remain valid.
   Nothing is downloaded, tagged, reprocessed or deleted by migration.
-- Removes the Tessella plugin checkout as its last step.
-  It refuses if that checkout has local changes.
+- Moves the Tessella plugin checkout to `~/.config/omarchy/plugins/.goldbarth.tessella.before-scenula` as its last step.
+  Omarchy ignores hidden folders, and nothing in it is deleted. Remove it once you no longer need it.
 - Rescans the shell; if it is unavailable, prints the command to run after starting it.
 
 Migration refuses independent old/new data directories, conflicting bar entries (both plugins enabled), invalid shell JSON and development symlinks.

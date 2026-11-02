@@ -20,7 +20,8 @@ Changing the ID inside the Tessella repository would therefore break the widget 
 A single repository also cannot serve both IDs: `omarchy-plugin-update` always follows `origin HEAD`.
 Scenula therefore ships from its own repository, and Tessella gets a final 0.2.1 bridge release with the old ID.
 The bridge shows a rename banner, a daily notification and a **Migrate to Scenula** button.
-The button installs Scenula next to Tessella (not enabled) and runs `scenula.py migrate`, see [README.md](README.md#upgrading-from-tessella).
+The button clones a pinned Scenula commit into a hidden staging folder, verifies and validates it, moves it into place and runs `scenula.py migrate`, see [README.md](README.md#upgrading-from-tessella).
+Omarchy never discovers an unverified Scenula tree this way, even if `shell.json` already enables Scenula.
 Users who never update Tessella keep a working 0.2.x install.
 
 ## Storage strategy
@@ -35,8 +36,10 @@ Normal daily sync and rotation retain their existing behavior after startup.
 
 The shell config receives a byte-for-byte backup before changing identity fields, and updates atomically with its original permissions.
 A symlinked shell config remains a symlink.
-Conflicting independent data directories, both plugins enabled, and a Tessella checkout with local changes are refused rather than merged, deleted or hidden.
-The Tessella checkout is removed only as the last step, so an interrupted migration can be rerun with the same command.
+An existing shell backup is never overwritten; one left readable by an older version is tightened to the permissions of `shell.json`, without following links.
+Conflicting independent data directories, both plugins enabled, and an unexpected backup or aside folder are refused rather than merged, deleted or hidden.
+The Tessella checkout is moved aside, not deleted, as the last step, so local changes are kept and an interrupted migration can be rerun with the same command.
+The migration runs no git command in the Tessella checkout, so its repository configuration cannot execute anything.
 The old IPC target routes to the same handler code once the Tessella widget is gone.
 Absolute paths in external scripts to the old plugin checkout require manual adjustment.
 
@@ -68,14 +71,13 @@ Git installation/update, manifest discovery, widget/service loading, IPC and Ima
 Only monitor detection and the final wallpaper setter are replaced, so they cannot change the real desktop wallpaper.
 The upgrade fixture starts with legacy identity/configuration and populated images, metadata, collages and state.
 The tests install Scenula next to a running Tessella widget, then verify migration, legacy/new IPC, automatic rotation, restart persistence and subsequent updates.
-Offline regressions cover idempotency, concurrent initialization, conflict refusal, local changes, malformed configuration, shell config symlinks, lock sharing, cancellation and data integrity.
+Offline regressions cover idempotency, concurrent initialization, conflict refusal, local changes, private and pre-existing backups, git configuration, malformed configuration, shell config symlinks, lock sharing, cancellation and data integrity.
 Visible compositor placement and the live GitHub install still need the post-publication check above.
 
-## Results on 2026-10-31
+## Results on 2026-11-03
 
 Validated on Omarchy 4.0.6-1 and Quickshell 0.3.2.r7.g2b4501a-1.
-All 21 tests passed with the offscreen and Wayland backends, including real panel instantiation with closed windows.
-An end-to-end run in a temporary HOME installed the real Tessella 0.2.1 bridge with `omarchy plugin add --enable`, then ran its real `migrate-to-scenula.sh` against a local copy of this repository.
-Result: Scenula took over the bar entry, settings were kept, the Tessella checkout was removed, and both IPC targets answered.
+All 27 tests passed with the offscreen and Wayland backends, including real panel instantiation with closed windows.
+The bridge itself is tested end-to-end in the Tessella repository, against this exact commit, including the state where `shell.json` already enables Scenula while its folder is missing.
 Manifest validation and `git diff --check` passed.
 The real installation and its backing data were not migrated during validation.
