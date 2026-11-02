@@ -74,7 +74,7 @@ The tests install Scenula next to a running Tessella widget, then verify migrati
 Offline regressions cover idempotency, concurrent initialization, conflict refusal, local changes, private and pre-existing backups, git configuration, malformed configuration, shell config symlinks, lock sharing, cancellation and data integrity.
 Visible compositor placement and the live GitHub install still need the post-publication check above.
 
-## Results on 2026-11-03
+## Results on 2026-11-02
 
 Validated on Omarchy 4.0.6-1 and Quickshell 0.3.2.r7.g2b4501a-1.
 All 27 tests passed with the offscreen and Wayland backends, including real panel instantiation with closed windows.
