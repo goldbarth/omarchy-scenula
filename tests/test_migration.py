@@ -1,6 +1,8 @@
 """Offline migration regression tests. Run: python3 -m unittest discover -s tests -v"""
 
+import contextlib
 import fcntl
+import io
 import importlib.util
 import json
 import os
@@ -10,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("manifest.json", "Service.qml", "BarWidget.qml", "Panel.qml",
@@ -227,6 +230,46 @@ class MigrationTests(MigrationFixture):
         self.populate()
         shutil.rmtree(self.old)
         self.cli("migrate")
+        self.assertEqual(json.loads(self.shell.read_text())["plugins"][0]["id"], "goldbarth.scenula")
+
+    def load_installed_backend(self):
+        with mock.patch.dict(os.environ, self.env):
+            spec = importlib.util.spec_from_file_location("scenula_installed", self.new / "scenula.py")
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+        return backend
+
+    def migrate_in_process(self, backend):
+        old_umask = os.umask(0o022)
+        try:
+            with mock.patch.dict(os.environ, self.env), contextlib.redirect_stdout(io.StringIO()):
+                backend.cmd_migrate()
+        finally:
+            os.umask(old_umask)
+
+    def test_private_shell_backup_is_never_readable_by_others(self):
+        backend = self.load_installed_backend()
+        # Stop right after the backup is written, before its final mode is applied.
+        with mock.patch.object(backend.shutil, "copymode", side_effect=OSError("stop")):
+            with self.assertRaises(OSError):
+                self.migrate_in_process(backend)
+        backup = self.shell.with_name("shell.json.before-scenula")
+        self.assertEqual(backup.read_bytes(), self.original)
+        self.assertEqual(backup.stat().st_mode & 0o077, 0)
+
+    def test_private_shell_replacement_is_never_readable_by_others(self):
+        backend = self.load_installed_backend()
+        modes = []
+        real_dump = backend.json.dump
+
+        def spy(data, f, *args, **kwargs):
+            modes.append(os.fstat(f.fileno()).st_mode & 0o777)
+            return real_dump(data, f, *args, **kwargs)
+
+        with mock.patch.object(backend.json, "dump", side_effect=spy):
+            self.migrate_in_process(backend)
+        self.assertEqual(modes, [0o600])
+        self.assertEqual(self.shell.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(self.shell.read_text())["plugins"][0]["id"], "goldbarth.scenula")
 
     def test_broken_directory_symlink_is_rejected(self):

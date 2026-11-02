@@ -201,7 +201,7 @@ def cmd_migrate():
         if changed:
             # Never overwrite an earlier backup, including after an interrupted run.
             try:
-                with open(backup, "xb") as f:
+                with open_private(backup, "wb") as f:
                     f.write(raw)
                 shutil.copymode(shell_path, backup)
             except FileExistsError:
@@ -312,10 +312,21 @@ def read_json(path, default):
         return default
 
 
+def open_private(path, mode):
+    """Create a new file that is readable only by its owner from the first byte on."""
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), mode)
+
+
 def write_json(path, data, mode=None):
+    """Replace path atomically. With mode, the content is never exposed more widely than that."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w") as f:
+    if mode is None:
+        f = open(tmp, "w")
+    else:
+        tmp.unlink(missing_ok=True)  # a stale file would keep its old permissions
+        f = open_private(tmp, "w")
+    with f:
         json.dump(data, f, indent=1, ensure_ascii=False)
         f.write("\n")
     if mode is not None:
